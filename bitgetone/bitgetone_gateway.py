@@ -253,13 +253,12 @@ class BitGetOneGateway(BaseGateway):
         self.recording_list = [vt_symbol for vt_symbol in self.recording_list if is_target_contract(vt_symbol, self.gateway_name)]
         # 查询历史数据合约列表
         self.history_contracts = copy(self.recording_list)
-        self.query_contracts = self.recording_list
-        #self.query_contracts = [vt_symbol for vt_symbol in self.get_file_path.all_trading_vt_symbols if is_target_contract(vt_symbol, self.gateway_name)]
-        self.leverage_contracts = copy(self.query_contracts)
+        self.leverage_contracts = [vt_symbol for vt_symbol in self.get_file_path.all_trading_vt_symbols if is_target_contract(vt_symbol, self.gateway_name)]
         # 下载历史数据状态
         self.history_status: bool = True
         # 订阅逐笔成交数据状态
         self.book_trade_status: bool = False
+        self.query_categories = copy(UTA_CATEGORIES)
     # ----------------------------------------------------------------------------------------------------
     def connect(self, log_account: dict = {}):
         """ """
@@ -355,17 +354,15 @@ class BitGetOneGateway(BaseGateway):
         处理定时任务
         """
         self.count += 1
-        if self.count < 5:
+        if self.count < 3:
             return
         self.count = 0
         #self.query_account()
         
-        if self.query_contracts:
-            vt_symbol = self.query_contracts.pop(0)
-            symbol, exchange, gateway_name = extract_vt_symbol(vt_symbol)
-            self.rest_api.query_order(vt_symbol)
-            self.rest_api.query_position(vt_symbol)
-            self.query_contracts.append(vt_symbol)
+        category = self.query_categories.pop(0)
+        self.rest_api.query_order(category)
+        self.rest_api.query_position(category)
+        self.query_categories.append(category)
 
         if self.leverage_contracts:
             vt_symbol = self.leverage_contracts.pop(0)
@@ -525,25 +522,23 @@ class BitGetSRestApi(RestClient):
         """
         self.add_request(method="GET", path="/api/v3/account/assets", callback=self.on_query_account)
     # ----------------------------------------------------------------------------------------------------
-    def query_order(self, vt_symbol: str):
+    def query_order(self, category: str, cursor: str = ""):
         """
         查询活动委托单
         """
-        symbol, exchange, gateway_name = extract_vt_symbol(vt_symbol)
-        raw_symbol, category = self.get_symbol_category(symbol, exchange)
-        params = {"category": category, "symbol": raw_symbol, "limit": "100"}
-        self.add_request(method="GET", path="/api/v3/trade/unfilled-orders", callback=self.on_query_order, params=params, extra=vt_symbol)
+        params = {"category": category, "limit": "100"}
+        if cursor:
+            params["cursor"] = cursor
+        self.add_request(method="GET", path="/api/v3/trade/unfilled-orders", callback=self.on_query_order, params=params)
     # ----------------------------------------------------------------------------------------------------
-    def query_position(self, vt_symbol: str):
+    def query_position(self, category: str):
         """
-        查询持仓数据，REST API现货没有持仓。
+        查询持仓数据，只支持期货合约
         """
-        symbol, exchange, gateway_name = extract_vt_symbol(vt_symbol)
-        raw_symbol, category = self.get_symbol_category(symbol, exchange)
         if category not in FUTURES_CATEGORIES:
             return
-        params = {"category": category, "symbol": raw_symbol}
-        self.add_request(method="GET", path="/api/v3/position/current-position", callback=self.on_query_position, params=params, extra=vt_symbol)
+        params = {"category": category}
+        self.add_request(method="GET", path="/api/v3/position/current-position", callback=self.on_query_position, params=params)
     # ----------------------------------------------------------------------------------------------------
     def query_repayable(self):
         """
@@ -779,10 +774,13 @@ class BitGetSRestApi(RestClient):
         """
         if self.check_error(data, "查询活动委托"):
             return
-        order_list = data["data"]["list"]
+        result = data["data"]
+        order_list = result["list"]
         if not order_list:
             return
+        order_ids = set()
         for order_data in order_list:
+            order_ids.add(int(order_data["orderId"]))
             category = normalize_category(order_data["category"])
             exchange = CATEGORY_EXCHANGE_MAP[category]
             symbol = make_bitget_symbol(order_data["symbol"], category)
@@ -803,6 +801,15 @@ class BitGetSRestApi(RestClient):
                 order.offset = Offset.CLOSE
 
             self.gateway.on_order(order)
+
+        if len(order_list) == 100:
+            # 查询到达上限后使用本次响应的分页游标继续查询。
+            # Bitget要求第二页及后续请求传入上一次响应的最小orderId，
+            current_cursor = request.params.get("cursor","")
+            next_cursor = str(min(order_ids))
+            if next_cursor != current_cursor:
+                category = request.params["category"]
+                self.query_order(category, next_cursor)
     # ----------------------------------------------------------------------------------------------------
     def on_query_position(self, data: dict, request: Request) -> None:
         """
