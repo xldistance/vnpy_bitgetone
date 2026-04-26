@@ -322,7 +322,7 @@ class BitGetOneGateway(BaseGateway):
                 symbol=symbol,
                 exchange=exchange,
                 interval=Interval.MINUTE,
-                start=datetime.now(TZ_INFO) - timedelta(minutes=1440),
+                start=datetime.now(TZ_INFO) - timedelta(minutes=100),
                 end=datetime.now(TZ_INFO),
                 gateway_name=self.gateway_name,
             )
@@ -415,9 +415,6 @@ class BitGetSRestApi(RestClient):
             if request.params:
                 params = sorted(request.params.items())
                 path += "?" + urlencode(params)
-            # path需签名
-            if "/instruments" not in path and "/candles" not in path:
-                request.path = path
                 
         elif method == "POST":
             if request.data:
