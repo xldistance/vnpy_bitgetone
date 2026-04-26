@@ -1018,6 +1018,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         }
         self.order_book_bids = defaultdict(dict)  # 订单簿买单字典
         self.order_book_asks = defaultdict(dict)  # 订单簿卖单字典
+        self.books_seq:Dict[str,int] = defaultdict(int)  # books seq
     # ----------------------------------------------------------------------------------------------------
     def connect(self, key: str, secret: str, passphrase: str, proxy_host: str, proxy_port: int) -> None:
         """ """
@@ -1129,21 +1130,28 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         """
         arg = packet["arg"]
         category = arg["instType"]
+        action = packet["action"]
         # 现货只交易杠杆
         if category == "spot":
             category = "margin"
         symbol = make_bitget_symbol(arg["symbol"], category)
 
         order_books = packet["data"][0]
+        last_seq = order_books["seq"]
+        # 过滤乱序books推送
+        if last_seq < self.books_seq[symbol]:
+            return
+        self.books_seq[symbol] = last_seq
+
         tick = self.ticks[symbol]
         tick.datetime = get_local_datetime(to_int(order_books["ts"]))
         
         bids = order_books["b"]
         asks = order_books["a"]
-        
+
         # 定义更新order book的函数
         def update_order_book(order_book_dict, order_book_data, prefix):
-            order_book_dict.clear() if packet["action"] == "snapshot" else None
+            order_book_dict.clear() if action == "snapshot" else None
             for price, volume in order_book_data:
                 if float(volume) > 0:
                     order_book_dict[price] = volume
