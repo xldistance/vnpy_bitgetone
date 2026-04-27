@@ -53,7 +53,7 @@ REST_HOST = "https://api.bitget.com"
 WEBSOCKET_DATA_HOST = "wss://ws.bitget.com/v3/ws/public"  # UTA ws公共频道
 WEBSOCKET_TRADE_HOST = "wss://ws.bitget.com/v3/ws/private"  # UTA ws私有频道
 
-STATUS_BITGETS2VT: Dict[str, Status] = {
+STATUS_BITGETONE2VT: Dict[str, Status] = {
     "new": Status.NOTTRADED,
     "live": Status.NOTTRADED,
     "partially_filled": Status.PARTTRADED,
@@ -61,34 +61,34 @@ STATUS_BITGETS2VT: Dict[str, Status] = {
     "filled": Status.ALLTRADED,
 }
 
-ORDERTYPE_VT2BITGETS: Dict[OrderType, Any] = {
+ORDERTYPE_VT2BITGETONE: Dict[OrderType, Any] = {
     OrderType.LIMIT: "limit",
     OrderType.MARKET: "market",
     OrderType.FAK: "limit",
     OrderType.FOK: "limit",
 }
-ORDERTYPE_BITGETS2VT: Dict[Any, OrderType] = {"limit": OrderType.LIMIT, "market": OrderType.MARKET}
-TIMEINFORCE_VT2BITGETS: Dict[OrderType, str] = {
+ORDERTYPE_BITGETONE2VT: Dict[Any, OrderType] = {"limit": OrderType.LIMIT, "market": OrderType.MARKET}
+TIMEINFORCE_VT2BITGETONE: Dict[OrderType, str] = {
     OrderType.LIMIT: "gtc",
     OrderType.MARKET: "ioc",
     OrderType.FAK: "ioc",
     OrderType.FOK: "fok",
 }
 
-DIRECTION_VT2BITGETS: Dict[Direction, str] = {
+DIRECTION_VT2BITGETONE: Dict[Direction, str] = {
     Direction.LONG: "buy",
     Direction.SHORT: "sell",
 }
-DIRECTION_BITGETS2VT: Dict[str, Direction] = {v: k for k, v in DIRECTION_VT2BITGETS.items()}
+DIRECTION_BITGETONE2VT: Dict[str, Direction] = {v: k for k, v in DIRECTION_VT2BITGETONE.items()}
 
-HOLDSIDE_BITGETS2VT: Dict[str, Direction] = {"long": Direction.LONG, "short": Direction.SHORT}
+HOLDSIDE_BITGETONE2VT: Dict[str, Direction] = {"long": Direction.LONG, "short": Direction.SHORT}
 OPPOSITE_DIRECTION = {
     Direction.LONG: Direction.SHORT,
     Direction.SHORT: Direction.LONG,
 }
 CLOSE_OFFSETS = {Offset.CLOSE, Offset.CLOSETODAY, Offset.CLOSEYESTERDAY}
 
-INTERVAL_VT2BITGETS: Dict[Interval, str] = {
+INTERVAL_VT2BITGETONE: Dict[Interval, str] = {
     Interval.MINUTE: "1m",
     Interval.HOUR: "1H",
     Interval.DAILY: "1D",
@@ -219,7 +219,7 @@ def parse_bitget_order_type(data: dict) -> OrderType:
         return OrderType.FAK
     if time_in_force == "fok":
         return OrderType.FOK
-    return ORDERTYPE_BITGETS2VT[order_type]
+    return ORDERTYPE_BITGETONE2VT[order_type]
 
 
 class BitGetOneGateway(BaseGateway):
@@ -244,9 +244,9 @@ class BitGetOneGateway(BaseGateway):
         """ """
         super(BitGetOneGateway, self).__init__(event_engine, "BITGETONE")
         self.orders: Dict[str, OrderData] = {}
-        self.rest_api = BitGetSRestApi(self)
-        self.trade_ws_api = BitGetSTradeWebsocketApi(self)
-        self.market_ws_api = BitGetSDataWebsocketApi(self)
+        self.rest_api = BitGetOneRestApi(self)
+        self.trade_ws_api = BitGetOneTradeWebsocketApi(self)
+        self.market_ws_api = BitGetOneDataWebsocketApi(self)
         self.count = 0  # 轮询计时:秒
         # 所有合约列表
         self.recording_list = self.get_file_path.recording_list
@@ -286,13 +286,15 @@ class BitGetOneGateway(BaseGateway):
         """
         发送委托单
         """
-        return self.rest_api.send_order(req)
+        #return self.rest_api.send_order(req)
+        return self.trade_ws_api.send_order(req)
     # ----------------------------------------------------------------------------------------------------
     def cancel_order(self, req: CancelRequest) -> Request:
         """
         取消委托单
         """
-        self.rest_api.cancel_order(req)
+        #self.rest_api.cancel_order(req)
+        self.trade_ws_api.cancel_order(req)
     # ----------------------------------------------------------------------------------------------------
     def query_account(self) -> Request:
         """
@@ -358,11 +360,11 @@ class BitGetOneGateway(BaseGateway):
             return
         self.count = 0
         #self.query_account()
-        
-        category = self.query_categories.pop(0)
-        self.rest_api.query_order(category)
-        self.rest_api.query_position(category)
-        self.query_categories.append(category)
+        if self.query_categories:
+            category = self.query_categories.pop(0)
+            self.rest_api.query_order(category)
+            self.rest_api.query_position(category)
+            self.query_categories.append(category)
 
         if self.leverage_contracts:
             vt_symbol = self.leverage_contracts.pop(0)
@@ -376,7 +378,7 @@ class BitGetOneGateway(BaseGateway):
             self.event_engine.register(EVENT_TIMER, self.query_history)
         self.event_engine.register(EVENT_TIMER, self.process_timer_event)
 # ----------------------------------------------------------------------------------------------------
-class BitGetSRestApi(RestClient):
+class BitGetOneRestApi(RestClient):
     """
     BITGET REST API
     """
@@ -415,6 +417,9 @@ class BitGetSRestApi(RestClient):
             if request.params:
                 params = sorted(request.params.items())
                 path += "?" + urlencode(params)
+            # path需签名
+            #if "/instruments" not in path and "/candles" not in path:
+                #request.path = path
                 
         elif method == "POST":
             if request.data:
@@ -467,7 +472,7 @@ class BitGetSRestApi(RestClient):
             return "USDT-FUTURES"
         return "COIN-FUTURES"
     # ----------------------------------------------------------------------------------------------------
-    def get_symbol_category(self, symbol: str, exchange: Exchange) -> tuple:
+    def get_symbol_category(self, symbol: str, exchange: Exchange) -> tuple[str,str]:
         """
         根据symbol/exchange返回交易所symbol和UTA产品类型。
         """
@@ -609,7 +614,7 @@ class BitGetSRestApi(RestClient):
             params = {
                 "category": category,
                 "symbol": symbol,
-                "interval": INTERVAL_VT2BITGETS[req.interval],
+                "interval": INTERVAL_VT2BITGETONE[req.interval],
                 "type": "MARKET",
                 "startTime": str(int(start.timestamp() * 1000)),
                 "endTime": str(int(end.timestamp() * 1000)),
@@ -659,7 +664,7 @@ class BitGetSRestApi(RestClient):
             msg = f"未查询到合约：{req.vt_symbol}历史数据，请核实行情连接"
             self.gateway.write_log(msg)
     # ----------------------------------------------------------------------------------------------------
-    def _new_order_id(self) -> int:
+    def new_order_id(self) -> int:
         """
         生成本地委托号
         """
@@ -673,19 +678,19 @@ class BitGetSRestApi(RestClient):
         """
         self.count_datetime = int(datetime.now(TZ_INFO).strftime("%Y%m%d%H%M%S"))
 
-        orderid: str = req.symbol + "-" + str(self.count_datetime) + str(self._new_order_id()).rjust(8,"0")
+        orderid: str = req.symbol + "-" + str(self.count_datetime) + str(self.new_order_id()).rjust(8,"0")
         order = req.create_order_data(orderid, self.gateway_name)
         order.datetime = datetime.now(TZ_INFO)
         req_symbol, category = self.get_symbol_category(req.symbol, req.exchange)
-        order_type = ORDERTYPE_VT2BITGETS[req.type]
+        order_type = ORDERTYPE_VT2BITGETONE[req.type]
         data = {
             "category": category,
             "symbol": req_symbol,
             "clientOid": orderid,
             "qty": str(req.volume),
-            "side": DIRECTION_VT2BITGETS.get(req.direction),
+            "side": DIRECTION_VT2BITGETONE.get(req.direction),
             "orderType": order_type,
-            "timeInForce": TIMEINFORCE_VT2BITGETS[req.type],
+            "timeInForce": TIMEINFORCE_VT2BITGETONE[req.type],
         }
         if order_type == "limit":
             data["price"] = str(req.price)
@@ -713,12 +718,13 @@ class BitGetSRestApi(RestClient):
         取消委托单
         """
         order = self.gateway.get_order(req.vt_orderid)
+        orderid = req.orderid
         raw_symbol, category = self.get_symbol_category(req.symbol, req.exchange)
-        data = {"category": category, "symbol": raw_symbol}
-        if str(req.orderid).startswith(f"{req.symbol}-"):
-            data["clientOid"] = req.orderid
+        data = {"category": category}
+        if str(orderid).startswith(f"{req.symbol}-"):
+            data["clientOid"] = orderid
         else:
-            data["orderId"] = req.orderid
+            data["orderId"] = orderid
         self.add_request(
             method="POST", path="/api/v3/trade/cancel-order", callback=self.on_cancel_order, on_failed=self.on_cancel_order_failed, data=data, extra=order
         )
@@ -788,9 +794,9 @@ class BitGetSRestApi(RestClient):
                 price=to_float(order_data["price"]),
                 volume=to_float(order_data["qty"]),
                 type=parse_bitget_order_type(order_data),
-                direction=DIRECTION_BITGETS2VT[order_data["side"]],
+                direction=DIRECTION_BITGETONE2VT[order_data["side"]],
                 traded=to_float(order_data["cumExecQty"]),
-                status=STATUS_BITGETS2VT[order_data["orderStatus"]],
+                status=STATUS_BITGETONE2VT[order_data["orderStatus"]],
                 datetime=get_local_datetime(to_int(order_data["createdTime"])),
                 gateway_name=self.gateway_name,
             )
@@ -820,7 +826,7 @@ class BitGetSRestApi(RestClient):
             category = normalize_category(pos_data["category"])
             exchange = CATEGORY_EXCHANGE_MAP[category]
             volume = to_float(pos_data["total"])
-            direction = HOLDSIDE_BITGETS2VT[pos_data["posSide"]]
+            direction = HOLDSIDE_BITGETONE2VT[pos_data["posSide"]]
             position = PositionData(
                 symbol=make_bitget_symbol(pos_data["symbol"], category),
                 exchange=exchange,
@@ -911,7 +917,10 @@ class BitGetSRestApi(RestClient):
     def on_cancel_order(self, data: dict, request: Request) -> None:
         """
         """
-        self.check_error(data, "撤单")
+        if self.check_error(data, "撤单"):
+            order = request.extra
+            order.status = Status.REJECTED
+            self.gateway.on_order(order)
     # ----------------------------------------------------------------------------------------------------
     def on_cancel_order_failed(self, status_code, request: Request) -> None:
         """
@@ -943,12 +952,12 @@ class BitGetSRestApi(RestClient):
         self.gateway.write_log(f"{func}请求出错，代码：{error_code}，信息：{error_msg}")
         return True
 # ----------------------------------------------------------------------------------------------------
-class BitGetSWebsocketApiBase(WebsocketClient):
+class BitGetOneWebsocketApiBase(WebsocketClient):
     """ """
 
     def __init__(self, gateway):
         """ """
-        super(BitGetSWebsocketApiBase, self).__init__()
+        super(BitGetOneWebsocketApiBase, self).__init__()
 
         self.gateway: BitGetOneGateway = gateway
         self.gateway_name: str = gateway.gateway_name
@@ -1004,10 +1013,17 @@ class BitGetSWebsocketApiBase(WebsocketClient):
     # ----------------------------------------------------------------------------------------------------
     def on_error_msg(self, packet) -> None:
         """ """
+        code = packet["code"]
         msg = packet["msg"]
-        self.gateway.write_log(f"交易接口：{self.gateway_name} WebSocket API收到错误回报，回报信息：{msg}")
+        orderid = packet.get("id")
+        if orderid:
+            order = self.gateway.get_order(f"{self.gateway_name}_{orderid}")
+            if order:
+                order.status = Status.REJECTED
+                self.gateway.on_order(order)
+        self.gateway.write_log(f"交易接口：{self.gateway_name} WebSocket API收到错误回报，状态码：{code}，回报信息：{msg}")
 # ----------------------------------------------------------------------------------------------------
-class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
+class BitGetOneDataWebsocketApi(BitGetOneWebsocketApiBase):
     """ """
 
     def __init__(self, gateway: BitGetOneGateway):
@@ -1189,7 +1205,7 @@ class BitGetSDataWebsocketApi(BitGetSWebsocketApiBase):
         tick.datetime = get_local_datetime(to_int(data.get("ts") or data.get("T") or packet.get("ts")))
         self.gateway.on_tick(copy(tick))
 # ----------------------------------------------------------------------------------------------------
-class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
+class BitGetOneTradeWebsocketApi(BitGetOneWebsocketApiBase):
     """ """
 
     def __init__(self, gateway: BitGetOneGateway):
@@ -1237,13 +1253,66 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
             sleep(1)
         self.subscribe_private()
     # ----------------------------------------------------------------------------------------------------
+    def send_order(self,req:OrderRequest) -> str:
+        """
+        ws发送委托单
+        """
+        rest_api = self.gateway.rest_api
+        count_datetime = int(datetime.now(TZ_INFO).strftime("%Y%m%d%H%M%S"))
+
+        orderid: str = req.symbol + "-" + str(count_datetime) + str(rest_api.new_order_id()).rjust(8,"0")
+        order = req.create_order_data(orderid, self.gateway_name)
+        order.datetime = datetime.now(TZ_INFO)
+        req_symbol, category = rest_api.get_symbol_category(req.symbol, req.exchange)
+        order_type = ORDERTYPE_VT2BITGETONE[req.type]
+        req_data = {
+                    "symbol":req_symbol,
+                    "orderType":order_type,
+                    "clientOid": orderid,
+                    "qty":str(req.volume),
+                    "side":DIRECTION_VT2BITGETONE.get(req.direction),
+                    "timeInForce":TIMEINFORCE_VT2BITGETONE[req.type],
+                }
+        if order_type == "limit":
+            req_data["price"] = str(req.price)
+        if (category in FUTURES_CATEGORIES and req.offset in CLOSE_OFFSETS):
+            # UTA单向持仓模式下平仓由reduceOnly控制。
+            req_data["reduceOnly"] = "YES"
+
+        data = {
+            "op":"trade",
+            "id":orderid,
+            "topic":"place-order",
+            "category":category.lower(),
+            "args":[req_data],
+        }
+        self.gateway.on_order(order)
+        self.send_packet(data)
+    # ----------------------------------------------------------------------------------------------------
+    def cancel_order(self,req:CancelRequest) -> str:
+        """
+        ws撤单
+        """
+        req_data = {}
+        orderid = req.orderid
+        if str(orderid).startswith(f"{req.symbol}-"):
+            req_data["clientOid"] = orderid
+        else:
+            req_data["orderId"] = orderid
+        data = {
+            "args": [req_data],
+            "id": orderid,
+            "op": "trade",
+            "topic": "cancel-order"
+        }
+        self.send_packet(data)
+    # ----------------------------------------------------------------------------------------------------
     def on_data(self, packet) -> None:
         """ """
         arg = packet["arg"]
         channel = arg["topic"]
         data = packet["data"]
-        if "action" in packet:
-            self.topic_map[channel](data)
+        self.topic_map[channel](data)
     # ----------------------------------------------------------------------------------------------------
     def on_account(self,data):
         """
@@ -1328,18 +1397,18 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
                 exchange=exchange,
                 orderid=get_bitget_orderid(order_data),
                 type=parse_bitget_order_type(order_data),
-                direction=DIRECTION_BITGETS2VT[order_data["side"]],
+                direction=DIRECTION_BITGETONE2VT[order_data["side"]],
                 price=to_float(order_data["price"]),
                 volume=to_float(order_data["qty"]),
                 traded=to_float(order_data["cumExecQty"]),
-                status=STATUS_BITGETS2VT[order_data["orderStatus"]],
+                status=STATUS_BITGETONE2VT[order_data["orderStatus"]],
                 datetime=get_local_datetime(to_int(order_data["createdTime"])),
                 gateway_name=self.gateway_name,
             )
             if is_reduce_only(order_data.get("reduceOnly")):
                 order.offset = Offset.CLOSE
             self.gateway.on_order(order)
-            
+
     def on_trade(self, data: dict) -> None:
         """
         收到成交回报
@@ -1352,7 +1421,7 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
                 exchange=exchange,
                 orderid=get_bitget_orderid(trade_data),
                 tradeid=trade_data["execId"],
-                direction=DIRECTION_BITGETS2VT[trade_data["side"]],
+                direction=DIRECTION_BITGETONE2VT[trade_data["side"]],
                 price=to_float(trade_data["execPrice"]),
                 volume=to_float(trade_data["execQty"]),
                 datetime=get_local_datetime(to_int(trade_data["execTime"])),
@@ -1371,7 +1440,7 @@ class BitGetSTradeWebsocketApi(BitGetSWebsocketApiBase):
             position = PositionData(
                 symbol=make_bitget_symbol(raw_symbol, category),
                 exchange=exchange,
-                direction=HOLDSIDE_BITGETS2VT[pos_data["posSide"]],
+                direction=HOLDSIDE_BITGETONE2VT[pos_data["posSide"]],
                 volume=abs(to_float(pos_data["size"])),
                 frozen=to_float(pos_data["frozen"]),
                 price=to_float(pos_data["avgPrice"]),
