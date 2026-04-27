@@ -324,7 +324,7 @@ class BitGetOneGateway(BaseGateway):
                 symbol=symbol,
                 exchange=exchange,
                 interval=Interval.MINUTE,
-                start=datetime.now(TZ_INFO) - timedelta(minutes=100),
+                start=datetime.now(TZ_INFO) - timedelta(minutes=1440),
                 end=datetime.now(TZ_INFO),
                 gateway_name=self.gateway_name,
             )
@@ -1278,7 +1278,8 @@ class BitGetOneTradeWebsocketApi(BitGetOneWebsocketApiBase):
         if (category in FUTURES_CATEGORIES and req.offset in CLOSE_OFFSETS):
             # UTA单向持仓模式下平仓由reduceOnly控制。
             req_data["reduceOnly"] = "YES"
-
+        else:
+            req_data["reduceOnly"] = "NO"
         data = {
             "op":"trade",
             "id":orderid,
